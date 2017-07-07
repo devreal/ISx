@@ -205,18 +205,33 @@ static int bucket_sort(void)
                              bucket_sizes.begin(),
                              bucket_sizes.end());
 
-    std::cout << "Allocating bucket_sizes(" << NUM_PES
-              << ", " << NUM_BUCKETS
-              << ", " << max_bucket_size << "); total = "
-              << NUM_PES * NUM_BUCKETS * max_bucket_size << std::endl;
+    if (my_rank == 0) {
+      std::cout << "Allocating bucket_sizes(" << NUM_PES
+                << ", " << NUM_BUCKETS
+                << ", " << max_bucket_size << "); total = "
+                << NUM_PES * NUM_BUCKETS * max_bucket_size << std::endl;
+    }
     // 3-dimensional array holding the bucketed elements per unit
     timer_start(&timers[TIMER_BUCK_ALLOC]);
     dash::NArray<int, 3> bucketed_keys(NUM_PES, NUM_BUCKETS, max_bucket_size,
                                        dash::BLOCKED, dash::NONE, dash::NONE);
     timer_stop(&timers[TIMER_BUCK_ALLOC]);
-    std::cout << "Done allocating buckets" << std::endl;
+    if (my_rank == 0) {
+      std::cout << "Done allocating buckets" << std::endl;
+    }
 
     bucketize_local_keys(my_keys, bucketed_keys, bucket_sizes);
+
+//    if (my_rank == 0) {
+//      for (int i = 0; i < comm_size; ++i) {
+//        for (int j = 0; j < comm_size; ++j) {
+//          for (int k = 0; k < max_bucket_size; ++k) {
+//            std::cout << "bucketed_keys[" << i << "][" << j << "][" << k << "] = "
+//                      << (int)bucketed_keys[i][j][k] << std::endl;
+//          }
+//        }
+//      }
+//    }
 
     long long int  my_bucket_size;
     std::vector<KEY_TYPE> my_bucket_keys = exchange_keys(bucketed_keys,
@@ -286,11 +301,12 @@ static inline int * count_local_bucket_sizes(
 {
   timer_start(&timers[TIMER_BCOUNT]);
 
-  int *local_bucket_sizes = bucket_sizes.lbegin();
+  const KEY_TYPE *__restrict mk      = my_keys.data();
+  int *__restrict local_bucket_sizes = bucket_sizes.lbegin();
   std::fill(local_bucket_sizes, local_bucket_sizes + NUM_BUCKETS, 0);
 
   for(unsigned int i = 0; i < NUM_KEYS_PER_PE; ++i){
-    const uint32_t bucket_index = my_keys[i]/BUCKET_WIDTH;
+    const uint32_t bucket_index = mk[i]/BUCKET_WIDTH;
     local_bucket_sizes[bucket_index]++;
   }
 
@@ -322,27 +338,34 @@ static inline void bucketize_local_keys(
   dash::NArray<int, 3>        &buckets,
   dash::NArray<int, 2>        &bucket_sizes)
 {
-  std::cout << "Bucketizing keys" << std::endl;
   timer_start(&timers[TIMER_BUCKETIZE]);
+
+  const KEY_TYPE * __restrict mk = my_keys.data();
 
   // reset bucket sizes
   dash::fill(bucket_sizes.begin(), bucket_sizes.end(), 0);
 
-  auto lbs = bucket_sizes.lbegin();
-  auto lb  = buckets.local[0];
+  int *__restrict lbs = bucket_sizes.lbegin();
+  auto bucket_size    = buckets.extent(2);
+  auto lb             = buckets.local[my_rank];
+  int *__restrict lbp = buckets.lbegin();
 
   for(unsigned int i = 0; i < NUM_KEYS_PER_PE; ++i){
-    const KEY_TYPE key = my_keys[i];
+    const KEY_TYPE key = mk[i];
     const uint32_t bucket_id = key / BUCKET_WIDTH;
     uint32_t index = lbs[bucket_id]++;
     assert(index < NUM_KEYS_PER_PE);
-    lb(bucket_id, index) = key;
+//    lb(bucket_id, index) = key;
+//    std::cout << my_rank << ": Putting key " << key << " to "
+//              << bucket_id * bucket_size + index
+//              << " (" << bucket_id << " * " << bucket_size << " + " << index
+//              << std::endl;
+    lbp[bucket_id * bucket_size + index] = key;
   }
 
-//  dash::barrier();
+  dash::barrier();
 
   timer_stop(&timers[TIMER_BUCKETIZE]);
-  std::cout << "Done bucketizing keys" << std::endl;
 
 #ifdef DEBUG
   
@@ -374,8 +397,9 @@ static inline std::vector<KEY_TYPE> exchange_keys(
   std::vector<int> my_bucket_sizes(dash::size());
 
   // TODO: This is really naive (O(n^2) communications).
-  //       Can we do this more elgantly? (accumulate over first dimension)
+  //       Can we do this more elgantly? sth like dash::slice?
   // TODO: At least this should use async operations
+  //       (requires .async on dash::NArray)
   for (int i = 0; i < dash::size(); i++) {
     my_bucket_sizes[i] = bucket_sizes(i, myid);
   }
@@ -388,18 +412,28 @@ static inline std::vector<KEY_TYPE> exchange_keys(
   int offset = 0;
 
   for (int i = 0; i < dash::size(); i++) {
-    std::cout << "Fetching "
-              << my_bucket_sizes[i]
-              << " elements from unit " << i
-              << " into offset " << offset << std::endl;
-    dash::copy_async(
-      buckets[i][myid].begin(),
-      buckets[i][myid].begin() + my_bucket_sizes[i],
-      my_bucket_keys.data() + offset);
+//    std::cout << "Fetching "
+//              << my_bucket_sizes[i]
+//              << " elements from unit " << i
+//              << " into offset " << offset << std::endl;
+    // TODO: broken! wait for fixed version, use DART instead
+//    dash::copy_async(
+//      buckets[i][myid].begin(),
+//      buckets[i][myid].begin() + my_bucket_sizes[i],
+//      my_bucket_keys.data() + offset);
+    dart_get(
+      my_bucket_keys.data() + offset,
+      buckets(i, myid, 0).dart_gptr(),
+      my_bucket_sizes[i], DART_TYPE_INT);
     offset += my_bucket_sizes[i];
   }
 
   buckets.flush_all();
+
+//  int i = 0;
+//  for (auto val : my_bucket_keys) {
+//    std::cout << my_rank << ": my_bucket_keys[" << i++ << "] = " << val << std::endl;
+//  }
 
   dash::barrier();
   timer_stop(&timers[TIMER_ATA_KEYS]);
@@ -440,7 +474,7 @@ count_local_keys(const std::vector<KEY_TYPE>& my_bucket_keys,
   // Count the occurences of each key in my bucket
   for(int i = 0; i < my_bucket_size; ++i){
     const unsigned int key_index = my_bucket_keys[i] - my_min_key;
-
+//    std::cout << my_rank << ": " << my_bucket_keys[i] << " vs " << my_min_key << " at " << i << std::endl;
     assert(my_bucket_keys[i] >= my_min_key);
     assert(key_index < BUCKET_WIDTH);
 
