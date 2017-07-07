@@ -265,11 +265,12 @@ static std::vector<KEY_TYPE> make_input(void)
   timer_start(&timers[TIMER_INPUT]);
 
   std::vector<KEY_TYPE> my_keys(NUM_KEYS_PER_PE);
+  KEY_TYPE *__restrict mk = my_keys.data();
 
   pcg32_random_t rng = seed_my_rank();
 
   for(unsigned int i = 0; i < NUM_KEYS_PER_PE; ++i) {
-    my_keys[i] = pcg32_boundedrand_r(&rng, MAX_KEY_VAL);
+    mk[i] = pcg32_boundedrand_r(&rng, MAX_KEY_VAL);
   }
 
   timer_stop(&timers[TIMER_INPUT]);
@@ -470,15 +471,17 @@ count_local_keys(const std::vector<KEY_TYPE>& my_bucket_keys,
   timer_start(&timers[TIMER_SORT]);
 
   const int my_min_key = my_rank * BUCKET_WIDTH;
+  const KEY_TYPE *__restrict mbk = my_bucket_keys.data();
+  int            *__restrict mlk = my_local_key_counts.data();
 
   // Count the occurences of each key in my bucket
   for(int i = 0; i < my_bucket_size; ++i){
-    const unsigned int key_index = my_bucket_keys[i] - my_min_key;
-//    std::cout << my_rank << ": " << my_bucket_keys[i] << " vs " << my_min_key << " at " << i << std::endl;
-    assert(my_bucket_keys[i] >= my_min_key);
+    const unsigned int key_index = mbk[i] - my_min_key;
+
+    assert(mbk[i] >= my_min_key);
     assert(key_index < BUCKET_WIDTH);
 
-    my_local_key_counts[key_index]++;
+    mlk[key_index]++;
   }
   timer_stop(&timers[TIMER_SORT]);
 
