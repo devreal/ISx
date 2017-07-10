@@ -188,15 +188,17 @@ static int bucket_sort(void)
 
     timer_start(&timers[TIMER_TOTAL]);
 
-    std::cout << "Allocating bucket_sizes(" << NUM_PES
-              << ", " << NUM_BUCKETS << "); total = "
-              << NUM_PES * NUM_BUCKETS << std::endl;
+    if (my_rank == 0) {
+      std::cout << "Allocating bucket_sizes(" << NUM_PES
+                << ", " << NUM_BUCKETS << "); total = "
+                << NUM_PES * NUM_BUCKETS << std::endl;
+    }
     // two-dimensional array holding the local bucket sizes for each process
     timer_start(&timers[TIMER_BSIZE_ALLOC]);
     dash::NArray<int, 2> bucket_sizes(NUM_PES, NUM_BUCKETS, dash::BLOCKED, dash::NONE);
     timer_stop(&timers[TIMER_BSIZE_ALLOC]);
 
-    std::vector<KEY_TYPE> my_keys = make_input();
+    uninitialized_vector<KEY_TYPE> my_keys = make_input();
 
     count_local_bucket_sizes(my_keys, bucket_sizes);
 
@@ -221,6 +223,8 @@ static int bucket_sort(void)
     }
 
     bucketize_local_keys(my_keys, bucketed_keys, bucket_sizes);
+    // release the allocated memory
+    my_keys.free();
 
 //    if (my_rank == 0) {
 //      for (int i = 0; i < comm_size; ++i) {
@@ -234,7 +238,7 @@ static int bucket_sort(void)
 //    }
 
     long long int  my_bucket_size;
-    std::vector<KEY_TYPE> my_bucket_keys = exchange_keys(bucketed_keys,
+    uninitialized_vector<KEY_TYPE> my_bucket_keys = exchange_keys(bucketed_keys,
                                                          bucket_sizes,
                                                          my_bucket_size);
 
@@ -260,11 +264,13 @@ static int bucket_sort(void)
  * Generates uniformly random keys [0, MAX_KEY_VAL] on each rank using the time and rank
  * number as a seed
  */
-static std::vector<KEY_TYPE> make_input(void)
+static uninitialized_vector<KEY_TYPE> make_input(void)
 {
   timer_start(&timers[TIMER_INPUT]);
 
-  std::vector<KEY_TYPE> my_keys(NUM_KEYS_PER_PE);
+  // TODO: this is a performance sink hole as (potentially GBs)
+  //       are initialized without need. 
+  uninitialized_vector<KEY_TYPE> my_keys(NUM_KEYS_PER_PE);
   KEY_TYPE *__restrict mk = my_keys.data();
 
   pcg32_random_t rng = seed_my_rank();
@@ -297,7 +303,7 @@ static std::vector<KEY_TYPE> make_input(void)
  * their corresponding bucket's size
  */
 static inline int * count_local_bucket_sizes(
-  const std::vector<KEY_TYPE> &my_keys,
+  const uninitialized_vector<KEY_TYPE> &my_keys,
   dash::NArray<int, 2>        &bucket_sizes)
 {
   timer_start(&timers[TIMER_BCOUNT]);
@@ -335,7 +341,7 @@ static inline int * count_local_bucket_sizes(
  * The contents of each bucket are not sorted.
  */
 static inline void bucketize_local_keys(
-  const std::vector<KEY_TYPE> &my_keys,
+  const uninitialized_vector<KEY_TYPE> &my_keys,
   dash::NArray<int, 3>        &buckets,
   dash::NArray<int, 2>        &bucket_sizes)
 {
@@ -386,7 +392,7 @@ static inline void bucketize_local_keys(
 /*
  * Each PE sends the contents of its local buckets to the PE that owns that bucket.
  */
-static inline std::vector<KEY_TYPE> exchange_keys(
+static inline uninitialized_vector<KEY_TYPE> exchange_keys(
   dash::NArray<int, 3> &buckets,
   dash::NArray<int, 2> &bucket_sizes,
   long long int        &my_bucket_size)
@@ -395,7 +401,7 @@ static inline std::vector<KEY_TYPE> exchange_keys(
 
   auto myid = dash::myid();
 
-  std::vector<int> my_bucket_sizes(dash::size());
+  uninitialized_vector<int> my_bucket_sizes(dash::size());
 
   // TODO: This is really naive (O(n^2) communications).
   //       Can we do this more elgantly? sth like dash::slice?
@@ -408,7 +414,7 @@ static inline std::vector<KEY_TYPE> exchange_keys(
   my_bucket_size = std::accumulate(
                      my_bucket_sizes.begin(), my_bucket_sizes.end(), 0);
 
-  std::vector<KEY_TYPE> my_bucket_keys(my_bucket_size);
+  uninitialized_vector<KEY_TYPE> my_bucket_keys(my_bucket_size);
 
   int offset = 0;
 
@@ -463,7 +469,7 @@ static inline std::vector<KEY_TYPE> exchange_keys(
  * my_bucket_keys: All keys in my bucket unsorted [my_rank * BUCKET_WIDTH, (my_rank+1)*BUCKET_WIDTH)
  */
 static inline std::vector<int>
-count_local_keys(const std::vector<KEY_TYPE>& my_bucket_keys,
+count_local_keys(const uninitialized_vector<KEY_TYPE>& my_bucket_keys,
                  const long long int my_bucket_size)
 {
   std::vector<int> my_local_key_counts(BUCKET_WIDTH, 0);
@@ -508,7 +514,7 @@ count_local_keys(const std::vector<KEY_TYPE>& my_bucket_keys,
  * Ensures the final number of keys is equal to the initial.
  */
 static int verify_results(std::vector<int>      &my_local_key_counts,
-                          std::vector<KEY_TYPE> &my_local_keys,
+                          uninitialized_vector<KEY_TYPE> &my_local_keys,
                           const long long int my_bucket_size)
 {
 

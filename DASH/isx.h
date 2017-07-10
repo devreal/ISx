@@ -37,6 +37,50 @@ POSSIBILITY OF SUCH DAMAGE.
 #include <libdash.h>
 #include "timer.h"
 #include "pcg_basic.h"
+
+template<typename T>
+struct uninitialized_vector {
+public:
+  uninitialized_vector(size_t size) : _size(size) {
+    this->_data = static_cast<T*>(malloc(size*sizeof(T)));
+  }
+
+  ~uninitialized_vector() {
+    this->free();
+  }
+
+  T& operator[](size_t pos) {
+    return this->_data[pos];
+  }
+
+  const T& operator[](size_t pos) const {
+    return this->_data[pos];
+  }
+
+
+  T* data(void) {
+    return this->_data;
+  }
+
+  const T* data(void) const {
+    return this->_data;
+  }
+
+  void free() {
+    ::free(this->_data);
+    this->_data = NULL;
+    this->_size = 0;
+  }
+
+  T* begin() { return data(); }
+  T* end()   { return data() + _size; }
+
+private:
+  T *_data;
+  size_t _size;
+};
+
+
 /*
  * Ensures the command line parameters and values specified in params.h
  * are valid and will not cause problems.
@@ -66,29 +110,29 @@ static void shuffle(void * array, size_t n, size_t size);
 /*
  * Generates random keys [0, MAX_KEY_VAL] on each rank using the time and rank as a seed
  */
-static inline std::vector<KEY_TYPE> make_input(void);
+static inline uninitialized_vector<KEY_TYPE> make_input(void);
 
 /*
  * Computes the size of each local bucket by iterating all local keys and incrementing
  * their corresponding bucket's size
  */
 static inline int * count_local_bucket_sizes(
-  const std::vector<KEY_TYPE> &my_keys,
-  dash::NArray<int, 2>        &bucket_sizes);
+  const uninitialized_vector<KEY_TYPE> &my_keys,
+  dash::NArray<int, 2>               &bucket_sizes);
 
 /*
  * Rearranges all local keys into their corresponding local bucket.
  * The contents of each bucket are not sorted.
  */
 static inline void bucketize_local_keys(
-  const std::vector<KEY_TYPE> &my_keys,
+  const uninitialized_vector<KEY_TYPE> &my_keys,
   dash::NArray<int, 3>        &buckets,
   dash::NArray<int, 2>        &bucket_sizes);
 
 /*
  * Each PE sends the contents of its local buckets to the PE that owns that bucket.
  */
-static inline std::vector<KEY_TYPE> exchange_keys(
+static inline uninitialized_vector<KEY_TYPE> exchange_keys(
   dash::NArray<int, 3> &buckets,
   dash::NArray<int, 2> &bucket_sizes,
   long long int &my_bucket_size);
@@ -97,7 +141,7 @@ static inline std::vector<KEY_TYPE> exchange_keys(
  * Count the occurence of each key within my bucket. 
  */
 static inline std::vector<int>
-count_local_keys(const std::vector<KEY_TYPE>& my_bucket_keys,
+count_local_keys(const uninitialized_vector<KEY_TYPE>& my_bucket_keys,
                  const long long int my_bucket_size);
 
 /*
@@ -105,9 +149,9 @@ count_local_keys(const std::vector<KEY_TYPE>& my_bucket_keys,
  * Ensures all keys after the exchange are within a PE's bucket boundaries.
  * Ensures the final number of keys is equal to the initial.
  */
-static int verify_results(std::vector<int>      &my_local_key_counts,
-                          std::vector<KEY_TYPE> &my_local_keys,
-                          const long long int my_bucket_size);
+static int verify_results(std::vector<int>             &my_local_key_counts,
+                          uninitialized_vector<KEY_TYPE> &my_local_keys,
+                          const long long int           my_bucket_size);
 
 /*
  * Seeds each rank based on the rank number and time
