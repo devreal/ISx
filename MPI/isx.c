@@ -194,6 +194,8 @@ static int bucket_sort(void)
                                                                    &send_offsets);
 
     KEY_TYPE * my_local_bucketed_keys =  bucketize_local_keys(my_keys, local_bucket_offsets);
+    free(local_bucket_offsets);
+    free(my_keys);
 
     int * my_global_recv_counts = exchange_receive_counts(local_bucket_sizes);
 
@@ -207,6 +209,9 @@ static int bucket_sort(void)
                                               my_local_bucketed_keys,
                                               &my_bucket_size);
 
+    free(my_local_bucketed_keys);
+    free(local_bucket_sizes);
+    free(send_offsets);
 
     int * my_local_key_counts = count_local_keys(my_bucket_keys, my_bucket_size);
 
@@ -220,11 +225,6 @@ static int bucket_sort(void)
     }
 
 
-    free(my_local_bucketed_keys);
-    free(my_keys);
-    free(local_bucket_sizes);
-    free(local_bucket_offsets);
-    free(send_offsets);
     free(my_local_key_counts);
     free(my_bucket_keys);
 
